@@ -1,0 +1,72 @@
+#!/usr/bin/env ruby
+
+require 'mysql'
+require 'sanitize'
+
+clean     = String.new
+dirty     = String.new
+values    = Array.new
+matches   = Array.new
+userid    = String.new
+signature = String.new
+sanitized = String.new
+
+@@verbose = false
+@@dbh     = Mysql.real_connect("localhost", "username", "password", "database")
+@@dbh.autocommit false
+
+
+# Grab all the signatures from the database
+res = @@dbh.query("SELECT userid,signature FROM usertextfield")
+
+def signature_update userid, signature, dirty
+
+  puts "UPDATE usertextfield SET signature = #{signature} WHERE userid = #{userid}" if @@verbose
+
+  begin
+    pst = @@dbh.prepare "UPDATE usertextfield SET signature = ? WHERE userid = ?"
+    pst.execute(signature, userid)
+
+    @@dbh.commit
+  rescue Mysql::Error => e
+      puts "ERROR: #{e}"
+      @@dbh.rollback
+  ensure
+    pst.close if pst
+  end
+
+  puts '-'*50 if @@verbose
+
+  return 0
+end
+
+
+# Loop through all signatures in the database
+res.each do |r|
+
+  userid = r[0].to_i
+  signature, dirty = r[1], r[1]
+
+  # SKip empty or blank signatures
+  if signature.nil? or signature == ""
+    next
+  elsif ! signature.valid_encoding?
+    signature = signature.encode("UTF-16be", :invalid=>:replace, :replace=>"?").encode('UTF-8')
+  end
+
+  # Reformat broken HTML and strip out imported PHP snippets
+  signature.gsub! /<span style=(['"])font-size:(\d+?[^\s,]+?),\s/m, "<span style=\\1font-size:\\2;line-height:100%\\1>"
+  signature.gsub! /\$this->unconvert_size\(\d+?,  \)/m, ''
+  signature.gsub! /\$this->unconvert_size\(\d+?,\s/m, ''
+  signature.gsub! /\$this->unconvert_size\((\d+?pt)(;[^"']+?)(['"])/m, "<span style=\\3font-size:\\1\\2\\3" if signature.match /line-height/m
+  signature.gsub! /\)$/m, '' if signature =~ /\)$/m # Removes the $this->unconvert_size( ending )
+
+  # Remoe all HTML
+  sanitized = Sanitize.clean signature
+  next if signature == sanitized
+
+  signature_update userid, sanitized, r[1]
+
+end
+
+# EOF
